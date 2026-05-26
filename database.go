@@ -11,14 +11,41 @@ import (
 	"strings"
 )
 
+
 //go:embed cc_ids.csv
 var embeddedCSV string
 
-// CCIDEntry is one CC-ID with its short title and optional long description.
+// CCIDEntry stores all language variants so the UI can search across all of them.
 type CCIDEntry struct {
 	ID          int
-	Description string // TITLE_ENGB, fallback TITLE_ENUS
-	LongText    string // LONGTEXT_ENGB (used for tooltips / detail view)
+	Description string // primary display label: TITLE_ENGB, fallback TITLE_ENUS
+
+	TitleENGB string
+	LongENGB  string
+	TitleENUS string
+	LongENUS  string
+	TitleDEDE string
+	LongDEDE  string
+}
+
+// matchesQuery returns true when the CC-ID number or any language text contains q (case-insensitive).
+func matchesQuery(e CCIDEntry, q string) bool {
+	if q == "" {
+		return true
+	}
+	if strings.Contains(strconv.Itoa(e.ID), q) {
+		return true
+	}
+	for _, s := range []string{
+		e.TitleENGB, e.LongENGB,
+		e.TitleENUS, e.LongENUS,
+		e.TitleDEDE, e.LongDEDE,
+	} {
+		if s != "" && strings.Contains(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	return false
 }
 
 // loadAllEntries returns every CC-ID entry sorted by ID.
@@ -58,9 +85,9 @@ func csvData() string {
 }
 
 // parseCSV handles the multi-column BMW error code CSV.
-// Columns: CC_ID, WARN_LIGHT_IDENTIFIER, TITLE_ENUS, LONGTEXT_ENUS,
+// Columns: CC_ID, WARN_LIGHT_IDENTIFIER,
 //
-//	TITLE_DEDE, LONGTEXT_DEDE, TITLE_ENGB, LONGTEXT_ENGB
+//	TITLE_ENUS, LONGTEXT_ENUS, TITLE_DEDE, LONGTEXT_DEDE, TITLE_ENGB, LONGTEXT_ENGB
 func parseCSV(data string) []CCIDEntry {
 	r := csv.NewReader(strings.NewReader(data))
 	r.LazyQuotes = true
@@ -77,9 +104,20 @@ func parseCSV(data string) []CCIDEntry {
 	}
 
 	idCol := colIdx(col, "CC_ID")
-	titleGB := colIdx(col, "TITLE_ENGB")
-	titleUS := colIdx(col, "TITLE_ENUS")
-	longGB := colIdx(col, "LONGTEXT_ENGB")
+	cTitleGB := colIdx(col, "TITLE_ENGB")
+	cLongGB := colIdx(col, "LONGTEXT_ENGB")
+	cTitleUS := colIdx(col, "TITLE_ENUS")
+	cLongUS := colIdx(col, "LONGTEXT_ENUS")
+	cTitleDE := colIdx(col, "TITLE_DEDE")
+	cLongDE := colIdx(col, "LONGTEXT_DEDE")
+
+	clean := func(s string) string {
+		s = strings.TrimSpace(s)
+		if s == "-" {
+			return ""
+		}
+		return s
+	}
 
 	var entries []CCIDEntry
 	for {
@@ -95,20 +133,25 @@ func parseCSV(data string) []CCIDEntry {
 			continue
 		}
 
-		title := field(rec, titleGB)
-		if title == "" || title == "-" {
-			title = field(rec, titleUS)
-		}
-		if title == "-" {
-			title = ""
+		titleGB := clean(field(rec, cTitleGB))
+		titleUS := clean(field(rec, cTitleUS))
+
+		// Primary display label: prefer EN-GB, fallback to EN-US
+		display := titleGB
+		if display == "" {
+			display = titleUS
 		}
 
-		long := field(rec, longGB)
-		if long == "-" {
-			long = ""
-		}
-
-		entries = append(entries, CCIDEntry{ID: id, Description: title, LongText: long})
+		entries = append(entries, CCIDEntry{
+			ID:          id,
+			Description: display,
+			TitleENGB:   titleGB,
+			LongENGB:    clean(field(rec, cLongGB)),
+			TitleENUS:   titleUS,
+			LongENUS:    clean(field(rec, cLongUS)),
+			TitleDEDE:   clean(field(rec, cTitleDE)),
+			LongDEDE:    clean(field(rec, cLongDE)),
+		})
 	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })

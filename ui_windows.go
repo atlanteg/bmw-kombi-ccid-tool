@@ -178,8 +178,7 @@ func (a *winApp) applyFilter() {
 	} else {
 		var f []CCIDEntry
 		for _, e := range a.allEntries {
-			if strings.Contains(strings.ToLower(e.Description), q) ||
-				strings.Contains(strconv.Itoa(e.ID), q) {
+			if matchesQuery(e, q) {
 				f = append(f, e)
 			}
 		}

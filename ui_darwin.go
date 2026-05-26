@@ -110,15 +110,14 @@ func (a *ccidApp) showStep1() {
 
 	search := widget.NewEntry()
 	search.SetPlaceHolder("Search by number or description…")
-	search.OnChanged = func(q string) {
-		q = strings.ToLower(strings.TrimSpace(q))
+	search.OnChanged = func(raw string) {
+		q := strings.ToLower(strings.TrimSpace(raw))
 		if q == "" {
 			a.filtered = a.allEntries
 		} else {
 			var f []CCIDEntry
 			for _, e := range a.allEntries {
-				if strings.Contains(strings.ToLower(e.Description), q) ||
-					strings.Contains(strconv.Itoa(e.ID), q) {
+				if matchesQuery(e, q) {
 					f = append(f, e)
 				}
 			}
