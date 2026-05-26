@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/lxn/walk"
@@ -21,7 +20,7 @@ import (
 const (
 	ghReleasesAPI = "https://api.github.com/repos/atlanteg/super-kombi-ccid-tool/releases/latest"
 	updateAsset   = "kombi-ccid-win32.exe"
-	idYes         = 6 // Windows IDYES — returned by MsgBox when user clicks Yes
+	idYes         = 6 // Windows IDYES
 )
 
 type ghRelease struct {
@@ -34,23 +33,29 @@ type ghAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// checkAndUpdate must be called in a goroutine.
-// It silently checks GitHub for a newer release; if one is found it prompts
-// the user and, on confirmation, downloads the new exe and restarts the app.
+// checkAndUpdate runs in a goroutine.
+// Strategy: while the process is still running, rename the current exe
+// out of the way (Windows allows renaming a running exe via FILE_SHARE_DELETE),
+// move the downloaded exe into its place, start it, then exit.
+// No batch scripts, no timing hacks.
 func checkAndUpdate(mw *walk.MainWindow) {
 	if version == "dev" {
-		return // never auto-update in dev builds
+		return
+	}
+
+	// On startup: clean up any leftover .bak from a previous update.
+	if exe, err := os.Executable(); err == nil {
+		_ = os.Remove(exe + ".bak")
 	}
 
 	rel, err := fetchRelease()
 	if err != nil || rel == nil {
-		return // network unavailable or API error — silent fail
+		return // network unavailable — silent fail
 	}
 	if !versionNewer(rel.TagName, version) {
-		return // already up to date
+		return
 	}
 
-	// Find the Windows exe in the release assets.
 	var downloadURL string
 	for _, a := range rel.Assets {
 		if a.Name == updateAsset {
@@ -62,13 +67,12 @@ func checkAndUpdate(mw *walk.MainWindow) {
 		return
 	}
 
-	// All UI must happen on the Walk main thread.
+	// Ask user.
 	proceed := false
 	mw.Synchronize(func() {
 		res := walk.MsgBox(mw,
 			"Update Available",
-			fmt.Sprintf(
-				"Version %s is available (you have %s).\n\nDownload and restart now?",
+			fmt.Sprintf("Version %s is available (you have %s).\n\nDownload and restart now?",
 				rel.TagName, version),
 			walk.MsgBoxYesNo|walk.MsgBoxIconInformation,
 		)
@@ -78,55 +82,66 @@ func checkAndUpdate(mw *walk.MainWindow) {
 		return
 	}
 
-	// Resolve the real path of the running exe.
+	// Resolve real exe path (follow symlinks, etc.)
 	exePath, err := os.Executable()
 	if err != nil {
-		showError(mw, "Cannot locate executable:\n"+err.Error())
+		showUpdateError(mw, "Cannot locate executable:\n"+err.Error())
 		return
 	}
 	exePath, _ = filepath.EvalSymlinks(exePath)
 	newExePath := exePath + ".new"
+	bakPath := exePath + ".bak"
 
-	// Download.
-	mw.Synchronize(func() { mw.SetTitle("BMW Kombi CC-ID Calculator — downloading update…") })
+	// Download new exe into the same directory.
+	mw.Synchronize(func() {
+		mw.SetTitle("BMW Kombi CC-ID Calculator — downloading update…")
+	})
 	if err := downloadFile(downloadURL, newExePath); err != nil {
+		_ = os.Remove(newExePath)
 		mw.Synchronize(func() { mw.SetTitle("BMW Kombi CC-ID Calculator " + version) })
-		os.Remove(newExePath)
-		showError(mw, "Download failed:\n"+err.Error())
+		showUpdateError(mw, "Download failed:\n"+err.Error())
 		return
 	}
 
-	// Write a small batch script to %TEMP% that:
-	//   1. waits 2 s for this process to exit
-	//   2. atomically replaces the exe
-	//   3. starts the new exe
-	//   4. self-deletes
-	scriptPath := filepath.Join(os.TempDir(), "kombi_update.bat")
-	script := "@echo off\r\n" +
-		"timeout /t 2 /nobreak >nul\r\n" +
-		"move /y \"" + newExePath + "\" \"" + exePath + "\"\r\n" +
-		"start \"\" \"" + exePath + "\"\r\n" +
-		"del \"%~f0\"\r\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
-		os.Remove(newExePath)
-		showError(mw, "Cannot write updater script:\n"+err.Error())
+	// ── Atomic swap (all os.Rename calls stay within the same directory) ──────
+	//
+	// 1. Rename running exe → .bak   (allowed while running on Windows 7+)
+	_ = os.Remove(bakPath) // clear any leftover
+	if err := os.Rename(exePath, bakPath); err != nil {
+		_ = os.Remove(newExePath)
+		mw.Synchronize(func() { mw.SetTitle("BMW Kombi CC-ID Calculator " + version) })
+		showUpdateError(mw,
+			"Cannot move the current executable.\n"+
+				"Make sure the app is in a folder you have write access to.\n\n"+
+				err.Error())
 		return
 	}
 
-	// Launch the batch script without a visible console window.
-	cmd := exec.Command("cmd", "/c", scriptPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-		HideWindow:    true,
+	// 2. Move downloaded exe → final path
+	if err := os.Rename(newExePath, exePath); err != nil {
+		// Restore original
+		_ = os.Rename(bakPath, exePath)
+		_ = os.Remove(newExePath)
+		mw.Synchronize(func() { mw.SetTitle("BMW Kombi CC-ID Calculator " + version) })
+		showUpdateError(mw, "Cannot install update:\n"+err.Error())
+		return
 	}
+
+	// 3. Start the new version.
+	cmd := exec.Command(exePath)
 	if err := cmd.Start(); err != nil {
-		os.Remove(newExePath)
-		os.Remove(scriptPath)
-		showError(mw, "Cannot launch updater:\n"+err.Error())
+		// Undo swap
+		_ = os.Rename(exePath, newExePath)
+		_ = os.Rename(bakPath, exePath)
+		mw.Synchronize(func() { mw.SetTitle("BMW Kombi CC-ID Calculator " + version) })
+		showUpdateError(mw, "Cannot start updated version:\n"+err.Error())
 		return
 	}
 
-	// Exit — the batch script will replace the exe and relaunch it.
+	// 4. Best-effort: delete backup (new process also attempts this on startup).
+	_ = os.Remove(bakPath)
+
+	// 5. Exit — the new version is already running.
 	os.Exit(0)
 }
 
@@ -146,9 +161,8 @@ func fetchRelease() (*ghRelease, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("GitHub API HTTP %d", resp.StatusCode)
 	}
 
 	var rel ghRelease
@@ -158,7 +172,7 @@ func fetchRelease() (*ghRelease, error) {
 	return &rel, nil
 }
 
-func downloadFile(url, destPath string) error {
+func downloadFile(url, dest string) error {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -166,20 +180,18 @@ func downloadFile(url, destPath string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("server HTTP %d", resp.StatusCode)
 	}
-
-	f, err := os.Create(destPath)
+	f, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-
 	_, err = io.Copy(f, resp.Body)
 	return err
 }
 
-// versionNewer returns true when latest is strictly greater than current.
+// versionNewer returns true when latest > current (semver comparison).
 func versionNewer(latest, current string) bool {
 	l, c := parseVer(latest), parseVer(current)
 	for i := range l {
@@ -193,7 +205,6 @@ func versionNewer(latest, current string) bool {
 	return false
 }
 
-// parseVer splits "v1.2.3" into [1, 2, 3].
 func parseVer(v string) [3]int {
 	v = strings.TrimPrefix(v, "v")
 	parts := strings.SplitN(v, ".", 3)
@@ -202,14 +213,15 @@ func parseVer(v string) [3]int {
 		if i >= 3 {
 			break
 		}
-		// strip pre-release suffixes like "-rc1"
-		p = strings.FieldsFunc(p, func(c rune) bool { return c == '-' || c == '+' })[0]
+		if idx := strings.IndexAny(p, "-+"); idx >= 0 {
+			p = p[:idx]
+		}
 		r[i], _ = strconv.Atoi(p)
 	}
 	return r
 }
 
-func showError(mw *walk.MainWindow, msg string) {
+func showUpdateError(mw *walk.MainWindow, msg string) {
 	mw.Synchronize(func() {
 		walk.MsgBox(mw, "Update Error", msg, walk.MsgBoxIconError)
 	})
