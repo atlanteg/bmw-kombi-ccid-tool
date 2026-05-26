@@ -53,8 +53,9 @@ func run() {
 		Size:     Size{Width: 920, Height: 820},
 		Layout:   VBox{MarginsZero: true},
 		Children: []Widget{
-			Composite{
-				Layout: VBox{Margins: Margins{Left: 8, Top: 8, Right: 8, Bottom: 8}},
+			ScrollView{
+				HorizontalFixed: true,
+				Layout:          VBox{Margins: Margins{Left: 8, Top: 8, Right: 8, Bottom: 8}},
 				Children: []Widget{
 
 					// ── Step 1: Select CC-IDs ─────────────────────────────────
@@ -208,7 +209,7 @@ func run() {
 						},
 					},
 				},
-			},
+			}, // end ScrollView
 		},
 	}).Create(); err != nil {
 		panic(err)
