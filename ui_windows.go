@@ -42,9 +42,14 @@ func run() {
 		selectedIDs: make(map[int]bool),
 	}
 
+	title := "BMW Kombi CC-ID Calculator"
+	if version != "dev" {
+		title += " " + version
+	}
+
 	if err := (MainWindow{
 		AssignTo: &wa.mw,
-		Title:    "BMW Kombi CC-ID Calculator",
+		Title:    title,
 		Size:     Size{Width: 920, Height: 820},
 		Layout:   VBox{MarginsZero: true},
 		Children: []Widget{
@@ -210,6 +215,7 @@ func run() {
 	}
 
 	wa.applyFilter()
+	go checkAndUpdate(wa.mw)
 	wa.mw.Run()
 }
 

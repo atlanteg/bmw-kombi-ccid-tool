@@ -34,7 +34,7 @@ jobs:
           CC:          i686-w64-mingw32-gcc
         run: |
           go build \
-            -ldflags "-H windowsgui -s -w" \
+            -ldflags "-H windowsgui -s -w -X main.version=${GITHUB_REF_NAME}" \
             -o kombi-ccid-win32.exe \
             .
 
