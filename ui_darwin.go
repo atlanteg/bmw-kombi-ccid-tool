@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -14,36 +16,34 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// ccidApp holds all UI state and the main window.
 type ccidApp struct {
 	fyneApp fyne.App
 	win     fyne.Window
 
-	descriptions map[int]string
-	allEntries   []CCIDEntry
-	selectedIDs  map[int]bool
-	filtered     []CCIDEntry
+	allEntries  []CCIDEntry
+	descs       map[int]string
+	selectedIDs map[int]bool
+	filtered    []CCIDEntry
 
-	// step 2: 8 entry widgets per group (group → [8]entry)
 	hexInputs map[int][8]*widget.Entry
 }
 
 func newCCIDApp(a fyne.App, w fyne.Window) *ccidApp {
+	all := loadAllEntries()
 	descs := loadDescriptions()
-	all := loadAllEntries(descs)
 	app := &ccidApp{
-		fyneApp:      a,
-		win:          w,
-		descriptions: descs,
-		allEntries:   all,
-		selectedIDs:  make(map[int]bool),
-		filtered:     all,
-		hexInputs:    make(map[int][8]*widget.Entry),
+		fyneApp:     a,
+		win:         w,
+		allEntries:  all,
+		descs:       descs,
+		selectedIDs: make(map[int]bool),
+		filtered:    all,
+		hexInputs:   make(map[int][8]*widget.Entry),
 	}
 	return app
 }
 
-// ── Step 1: CC-ID selection ───────────────────────────────────────────────────
+// ── Step 1 ────────────────────────────────────────────────────────────────────
 
 func (a *ccidApp) showStep1() {
 	a.filtered = a.allEntries
@@ -57,30 +57,31 @@ func (a *ccidApp) showStep1() {
 
 	var selList *widget.List
 
-	// Available list — declared after selList/selHeader so closures can reference them
 	availList := widget.NewList(
 		func() int { return len(a.filtered) },
 		func() fyne.CanvasObject {
 			return container.NewBorder(nil, nil, nil,
 				widget.NewButton("→", nil),
-				widget.NewLabel("template description"),
+				widget.NewLabel("template"),
 			)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			c := obj.(*fyne.Container)
 			lbl := c.Objects[0].(*widget.Label)
 			btn := c.Objects[1].(*widget.Button)
-			entry := a.filtered[id]
-			lbl.SetText(fmt.Sprintf("%-4d  %s", entry.ID, entry.Description))
+			if id >= len(a.filtered) {
+				return
+			}
+			e := a.filtered[id]
+			lbl.SetText(fmt.Sprintf("%-4d  %s", e.ID, e.Description))
 			btn.OnTapped = func() {
-				a.selectedIDs[entry.ID] = true
+				a.selectedIDs[e.ID] = true
 				selList.Refresh()
 				selHeader.SetText(fmt.Sprintf("Selected (%d)", len(a.selectedIDs)))
 			}
 		},
 	)
 
-	// Selected list
 	selList = widget.NewList(
 		func() int { return len(selEntries()) },
 		func() fyne.CanvasObject {
@@ -97,17 +98,16 @@ func (a *ccidApp) showStep1() {
 			c := obj.(*fyne.Container)
 			lbl := c.Objects[0].(*widget.Label)
 			btn := c.Objects[1].(*widget.Button)
-			entry := entries[id]
-			lbl.SetText(fmt.Sprintf("%-4d  %s", entry.ID, entry.Description))
+			e := entries[id]
+			lbl.SetText(fmt.Sprintf("%-4d  %s", e.ID, e.Description))
 			btn.OnTapped = func() {
-				delete(a.selectedIDs, entry.ID)
+				delete(a.selectedIDs, e.ID)
 				selList.Refresh()
 				selHeader.SetText(fmt.Sprintf("Selected (%d)", len(a.selectedIDs)))
 			}
 		},
 	)
 
-	// Search
 	search := widget.NewEntry()
 	search.SetPlaceHolder("Search by number or description…")
 	search.OnChanged = func(q string) {
@@ -127,22 +127,16 @@ func (a *ccidApp) showStep1() {
 		availList.Refresh()
 	}
 
-	leftPanel := container.NewBorder(
+	left := container.NewBorder(
 		container.NewVBox(
 			widget.NewLabelWithStyle("Available CC-IDs", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			search,
 		),
-		nil, nil, nil,
-		availList,
+		nil, nil, nil, availList,
 	)
+	right := container.NewBorder(selHeader, nil, nil, nil, selList)
 
-	rightPanel := container.NewBorder(
-		selHeader,
-		nil, nil, nil,
-		selList,
-	)
-
-	split := container.NewHSplit(leftPanel, rightPanel)
+	split := container.NewHSplit(left, right)
 	split.SetOffset(0.6)
 
 	clearBtn := widget.NewButton("Clear All", func() {
@@ -165,22 +159,17 @@ func (a *ccidApp) showStep1() {
 		"Step 1 of 3 — Select CC-IDs to Activate",
 		fyne.TextAlignCenter, fyne.TextStyle{Bold: true},
 	)
-
 	a.win.SetContent(container.NewBorder(
 		container.NewVBox(title, widget.NewSeparator()),
-		container.NewVBox(
-			widget.NewSeparator(),
-			container.NewBorder(nil, nil, clearBtn, nextBtn),
-		),
-		nil, nil,
-		split,
+		container.NewVBox(widget.NewSeparator(), container.NewBorder(nil, nil, clearBtn, nextBtn)),
+		nil, nil, split,
 	))
 }
 
 func (a *ccidApp) getSelected() []CCIDEntry {
 	entries := make([]CCIDEntry, 0, len(a.selectedIDs))
 	for id := range a.selectedIDs {
-		desc := a.descriptions[id]
+		desc := a.descs[id]
 		if desc == "" {
 			desc = "No description"
 		}
@@ -203,7 +192,7 @@ func (a *ccidApp) affectedGroups() []int {
 	return groups
 }
 
-// ── Step 2: hex byte input ────────────────────────────────────────────────────
+// ── Step 2 ────────────────────────────────────────────────────────────────────
 
 func (a *ccidApp) showStep2() {
 	a.hexInputs = make(map[int][8]*widget.Entry)
@@ -215,7 +204,6 @@ func (a *ccidApp) showStep2() {
 		minID := (gn - 1) * 64
 		maxID := gn*64 - 1
 
-		// collect selected IDs in this group
 		var ids []int
 		for id := range a.selectedIDs {
 			if id >= minID && id <= maxID {
@@ -228,31 +216,28 @@ func (a *ccidApp) showStep2() {
 			idStrs[i] = strconv.Itoa(id)
 		}
 
-		header := widget.NewLabelWithStyle(
+		hdr := widget.NewLabelWithStyle(
 			fmt.Sprintf("Group %d  (CC-IDs %d–%d)  →  activating: %s",
 				gn, minID, maxID, strings.Join(idStrs, ", ")),
 			fyne.TextAlignLeading, fyne.TextStyle{Bold: true},
 		)
 
-		// 8 individual hex byte entries
-		entriesRow := make([]fyne.CanvasObject, 8)
 		var entries [8]*widget.Entry
+		entriesRow := make([]fyne.CanvasObject, 8)
 		for i := 0; i < 8; i++ {
 			e := widget.NewEntry()
 			e.SetText("FF")
 			e.SetPlaceHolder("FF")
-
 			idx := i
 			e.OnChanged = func(s string) {
-				upper := strings.ToUpper(s)
-				if upper != s {
-					e.SetText(upper)
-					e.CursorColumn = len(upper)
+				u := strings.ToUpper(s)
+				if u != s {
+					e.SetText(u)
 				}
-				if len(upper) > 2 {
-					e.SetText(upper[:2])
+				if len(u) > 2 {
+					e.SetText(u[:2])
 				}
-				entries[idx] = e
+				_ = idx
 			}
 			entries[i] = e
 			entriesRow[i] = e
@@ -260,12 +245,7 @@ func (a *ccidApp) showStep2() {
 		a.hexInputs[gnCopy] = entries
 
 		byteGrid := container.New(layout.NewGridLayoutWithColumns(8), entriesRow...)
-
-		groupsBox.Add(container.NewVBox(
-			header,
-			byteGrid,
-			widget.NewSeparator(),
-		))
+		groupsBox.Add(container.NewVBox(hdr, byteGrid, widget.NewSeparator()))
 	}
 
 	loadBtn := widget.NewButton("Load from CAFD file…", func() {
@@ -293,20 +273,16 @@ func (a *ccidApp) showStep2() {
 	calcBtn := widget.NewButton("Calculate →", func() { a.calculate() })
 	calcBtn.Importance = widget.HighImportance
 
-	hint := widget.NewLabel("Enter the current 8-byte hex values for each group (from your CAFD file),\nor leave as FF FF FF FF FF FF FF FF if starting fresh.")
+	hint := widget.NewLabel("Enter current hex bytes from your CAFD file, or leave as FF (all masked).")
 	hint.Wrapping = fyne.TextWrapWord
 
 	title := widget.NewLabelWithStyle(
 		"Step 2 of 3 — Enter Current Hex Values",
 		fyne.TextAlignCenter, fyne.TextStyle{Bold: true},
 	)
-
 	a.win.SetContent(container.NewBorder(
 		container.NewVBox(title, widget.NewSeparator(), hint, loadBtn, widget.NewSeparator()),
-		container.NewVBox(
-			widget.NewSeparator(),
-			container.NewBorder(nil, nil, backBtn, calcBtn),
-		),
+		container.NewVBox(widget.NewSeparator(), container.NewBorder(nil, nil, backBtn, calcBtn)),
 		nil, nil,
 		container.NewScroll(groupsBox),
 	))
@@ -314,7 +290,6 @@ func (a *ccidApp) showStep2() {
 
 func (a *ccidApp) calculate() {
 	initialStates := make(map[int][]byte)
-
 	for groupNum, entries := range a.hexInputs {
 		b := make([]byte, 8)
 		for i, e := range entries {
@@ -325,7 +300,7 @@ func (a *ccidApp) calculate() {
 			val, err := strconv.ParseUint(text, 16, 8)
 			if err != nil {
 				dialog.ShowError(fmt.Errorf(
-					"Group %d, byte %d: invalid hex %q (use 00–FF)", groupNum, i+1, text,
+					"Group %d, byte %d: invalid hex %q", groupNum, i+1, text,
 				), a.win)
 				return
 			}
@@ -333,17 +308,14 @@ func (a *ccidApp) calculate() {
 		}
 		initialStates[groupNum] = b
 	}
-
 	ids := make([]int, 0, len(a.selectedIDs))
 	for id := range a.selectedIDs {
 		ids = append(ids, id)
 	}
-
-	results := calculateMask(initialStates, ids)
-	a.showStep3(results)
+	a.showStep3(calculateMask(initialStates, ids))
 }
 
-// ── Step 3: results ───────────────────────────────────────────────────────────
+// ── Step 3 ────────────────────────────────────────────────────────────────────
 
 func (a *ccidApp) showStep3(results []*GroupResult) {
 	content := container.NewVBox()
@@ -354,37 +326,27 @@ func (a *ccidApp) showStep3(results []*GroupResult) {
 		origStr := bytesToHex(gr.OriginalBytes)
 		modStr := bytesToHex(gr.ModifiedBytes)
 
-		// Build per-byte change description
 		var changes []string
 		for _, idx := range gr.ModifiedIndices {
 			changes = append(changes, fmt.Sprintf(
-				"byte %d: %02X → %02X",
-				idx+1, gr.OriginalBytes[idx], gr.ModifiedBytes[idx],
+				"byte %d: %02X→%02X", idx+1, gr.OriginalBytes[idx], gr.ModifiedBytes[idx],
 			))
 		}
 
-		groupLabel := widget.NewLabelWithStyle(
+		hdr := widget.NewLabelWithStyle(
 			fmt.Sprintf("Group %d  (CC-IDs %d–%d)",
 				gr.GroupNum, (gr.GroupNum-1)*64, gr.GroupNum*64-1),
 			fyne.TextAlignLeading, fyne.TextStyle{Bold: true},
 		)
-
-		origLbl := newMonoLabel("Before: " + origStr)
-		modLbl := newMonoLabel("After:  " + modStr)
-		changesLbl := widget.NewLabel("Changes: " + strings.Join(changes, ",  "))
+		origLbl := monoLabel("Before: " + origStr)
+		modLbl := monoLabel("After:  " + modStr)
+		chgLbl := widget.NewLabel("Changes: " + strings.Join(changes, ",  "))
 
 		copyBtn := widget.NewButtonWithIcon("Copy After", theme.ContentCopyIcon(), func() {
 			a.win.Clipboard().SetContent(bytesToHex(grCopy.ModifiedBytes))
 		})
 
-		card := widget.NewCard("", "", container.NewVBox(
-			groupLabel,
-			origLbl,
-			modLbl,
-			changesLbl,
-			copyBtn,
-		))
-		content.Add(card)
+		content.Add(widget.NewCard("", "", container.NewVBox(hdr, origLbl, modLbl, chgLbl, copyBtn)))
 		allLines = append(allLines, fmt.Sprintf("Group %d: %s", gr.GroupNum, modStr))
 	}
 
@@ -404,13 +366,9 @@ func (a *ccidApp) showStep3(results []*GroupResult) {
 		"Results — Modified CC-ID Masks",
 		fyne.TextAlignCenter, fyne.TextStyle{Bold: true},
 	)
-
 	a.win.SetContent(container.NewBorder(
 		container.NewVBox(title, widget.NewSeparator()),
-		container.NewVBox(
-			widget.NewSeparator(),
-			container.NewBorder(nil, nil, startOverBtn, copyAllBtn),
-		),
+		container.NewVBox(widget.NewSeparator(), container.NewBorder(nil, nil, startOverBtn, copyAllBtn)),
 		nil, nil,
 		container.NewScroll(content),
 	))
@@ -426,7 +384,7 @@ func bytesToHex(b []byte) string {
 	return strings.Join(parts, " ")
 }
 
-func newMonoLabel(text string) *widget.Label {
+func monoLabel(text string) *widget.Label {
 	l := widget.NewLabel(text)
 	l.TextStyle = fyne.TextStyle{Monospace: true}
 	return l

@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -8,7 +10,7 @@ import (
 func main() {
 	a := app.NewWithID("com.bmwtools.ccid-calculator")
 	w := a.NewWindow("BMW Kombi CC-ID Calculator")
-	w.Resize(fyne.NewSize(960, 620))
+	w.Resize(fyne.NewSize(960, 640))
 
 	ui := newCCIDApp(a, w)
 	ui.showStep1()
