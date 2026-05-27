@@ -37,6 +37,8 @@ type winApp struct {
 	allEntries  []CCIDEntry
 	filtered    []CCIDEntry
 	selectedIDs map[int]bool
+	descMode    int            // 0=EnUS 1=EnUS_Long 2=DeDe 3=DeDe_Long 4=EnGB 5=EnGB_Long
+	cbDescMode  *walk.ComboBox
 }
 
 func run() {
@@ -45,6 +47,7 @@ func run() {
 		allEntries:  all,
 		filtered:    all,
 		selectedIDs: make(map[int]bool),
+		descMode:    4, // EnGB — matches previous default
 	}
 
 	title := "BMW Kombi CC-ID Calculator"
@@ -135,6 +138,18 @@ func run() {
 									LineEdit{
 										AssignTo:      &wa.leSearch,
 										OnTextChanged: func() { wa.applyFilter() },
+									},
+									Label{Text: "  View:"},
+									ComboBox{
+										AssignTo: &wa.cbDescMode,
+										Model:    descModeNames,
+										Value:    descModeNames[4],
+										MaxSize:  Size{Width: 140},
+										OnCurrentIndexChanged: func() {
+											wa.descMode = wa.cbDescMode.CurrentIndex()
+											wa.refreshLists()
+											wa.refreshLiveList()
+										},
 									},
 									Label{AssignTo: &wa.lblStatus, Text: "0 selected"},
 								},
@@ -281,14 +296,14 @@ func (a *winApp) applyFilter() {
 func (a *winApp) refreshLists() {
 	items := make([]string, len(a.filtered))
 	for i, e := range a.filtered {
-		items[i] = fmt.Sprintf("%-5d  %s", e.ID, e.Description)
+		items[i] = fmt.Sprintf("%-5d  %s", e.ID, a.entryDesc(e))
 	}
 	a.lbAvailable.SetModel(items)
 
 	sel := a.getSelected()
 	selItems := make([]string, len(sel))
 	for i, e := range sel {
-		selItems[i] = fmt.Sprintf("%-5d  %s", e.ID, e.Description)
+		selItems[i] = fmt.Sprintf("%-5d  %s", e.ID, a.entryDesc(e))
 	}
 	a.lbSelected.SetModel(selItems)
 	a.lblStatus.SetText(fmt.Sprintf("%d selected", len(a.selectedIDs)))
@@ -321,14 +336,17 @@ func (a *winApp) removeSelected() {
 func (a *winApp) getSelected() []CCIDEntry {
 	entries := make([]CCIDEntry, 0, len(a.selectedIDs))
 	for id := range a.selectedIDs {
-		var desc string
+		found := false
 		for _, ae := range a.allEntries {
 			if ae.ID == id {
-				desc = ae.Description
+				entries = append(entries, ae) // full entry — all language fields
+				found = true
 				break
 			}
 		}
-		entries = append(entries, CCIDEntry{ID: id, Description: desc})
+		if !found {
+			entries = append(entries, CCIDEntry{ID: id, Description: fmt.Sprintf("CC-ID %d", id)})
+		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 	return entries
@@ -553,15 +571,7 @@ func (a *winApp) readFromCar() {
 				a.lblLive.SetText("Connected — no active CC-IDs found in cluster")
 				return
 			}
-			items := make([]string, len(ccids))
-			for i, c := range ccids {
-				mark := "   "
-				if a.selectedIDs[c.ID] {
-					mark = " ✓ "
-				}
-				items[i] = fmt.Sprintf("%s%-5d  %s", mark, c.ID, c.Description)
-			}
-			a.lbLive.SetModel(items)
+			a.refreshLiveList()
 			a.lblLive.SetText(fmt.Sprintf("%d CC-ID(s) found — double-click to add", len(ccids)))
 		})
 	}()
@@ -605,15 +615,63 @@ func (a *winApp) refreshLiveList() {
 	if len(a.liveCCIDs) == 0 {
 		return
 	}
+	entryByID := make(map[int]CCIDEntry, len(a.allEntries))
+	for _, e := range a.allEntries {
+		entryByID[e.ID] = e
+	}
 	items := make([]string, len(a.liveCCIDs))
 	for i, c := range a.liveCCIDs {
 		mark := "   "
 		if a.selectedIDs[c.ID] {
 			mark = " ✓ "
 		}
-		items[i] = fmt.Sprintf("%s%-5d  %s", mark, c.ID, c.Description)
+		desc := c.Description
+		if e, ok := entryByID[c.ID]; ok {
+			desc = a.entryDesc(e)
+		}
+		items[i] = fmt.Sprintf("%s%-5d  %s", mark, c.ID, desc)
 	}
 	a.lbLive.SetModel(items)
+}
+
+// ── description mode ─────────────────────────────────────────────────────────
+
+var descModeNames = []string{
+	"EnUS",
+	"EnUS_LongText",
+	"DeDe",
+	"DeDe_LongText",
+	"EnGB",
+	"EnGB_LongText",
+}
+
+// entryDesc returns the display string for e using the current language/mode.
+// Falls back to the next available language when the chosen field is empty.
+func (a *winApp) entryDesc(e CCIDEntry) string {
+	switch a.descMode {
+	case 0:
+		return firstNonEmpty(e.TitleENUS, e.TitleENGB, e.TitleDEDE)
+	case 1:
+		return firstNonEmpty(e.LongENUS, e.TitleENUS, e.LongENGB)
+	case 2:
+		return firstNonEmpty(e.TitleDEDE, e.TitleENGB, e.TitleENUS)
+	case 3:
+		return firstNonEmpty(e.LongDEDE, e.TitleDEDE, e.LongENGB)
+	case 4:
+		return firstNonEmpty(e.TitleENGB, e.TitleENUS, e.TitleDEDE)
+	case 5:
+		return firstNonEmpty(e.LongENGB, e.TitleENGB, e.LongENUS)
+	}
+	return e.Description
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // ── shared helper ─────────────────────────────────────────────────────────────
