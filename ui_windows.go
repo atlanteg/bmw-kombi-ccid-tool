@@ -3,11 +3,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/atlanteg/bmw-kombi-ccid-tool/bmwzgw"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 )
@@ -30,10 +32,13 @@ type winApp struct {
 	resComp   *walk.Composite       // container for per-group result rows
 
 	// Tab 1 — Read from Car
-	leVCIHost *walk.LineEdit
-	lblLive   *walk.Label
-	lbLive    *walk.ListBox
-	liveCCIDs []LiveCCID
+	cbAutoSearch *walk.CheckBox
+	leZGW        *walk.LineEdit  // auto-search ZGW discovery status
+	leVCIHost    *walk.LineEdit
+	lblLive      *walk.LineEdit  // connection result / error (separate row)
+	lbLive       *walk.ListBox
+	liveCCIDs    []LiveCCID
+	zgwCancel    context.CancelFunc
 
 	allEntries  []CCIDEntry
 	filtered    []CCIDEntry
@@ -80,7 +85,34 @@ func run() {
 							Label{Text: "Reads stored CC-IDs from the instrument cluster via EDIABAS/TCP (port 6801)."},
 							Label{Text: "Requirements: BMW VCI adapter connected via OBD-II cable, ignition ON."},
 
-							// IP + connect row
+							// Auto-search row: checkbox + ZGW discovery status
+							Composite{
+								Layout: HBox{MarginsZero: true},
+								Children: []Widget{
+									CheckBox{
+										AssignTo: &wa.cbAutoSearch,
+										Text:     "Auto-search",
+										Checked:  true,
+										OnCheckedChanged: func() {
+											if wa.cbAutoSearch.Checked() {
+												wa.leVCIHost.SetReadOnly(true)
+												wa.startAutoSearch()
+											} else {
+												wa.stopAutoSearch()
+												wa.leVCIHost.SetReadOnly(false)
+												wa.leZGW.SetText("Auto-search disabled — enter IP manually")
+											}
+										},
+									},
+									LineEdit{
+										AssignTo: &wa.leZGW,
+										ReadOnly: true,
+										Text:     "",
+									},
+								},
+							},
+
+							// IP + connect row (no inline status label)
 							Composite{
 								Layout: HBox{MarginsZero: true},
 								Children: []Widget{
@@ -94,8 +126,14 @@ func run() {
 										Text:      "Read from Car",
 										OnClicked: func() { wa.readFromCar() },
 									},
-									Label{AssignTo: &wa.lblLive, Text: ""},
 								},
+							},
+
+							// Connection result / error — own row, full width, never breaks layout
+							LineEdit{
+								AssignTo: &wa.lblLive,
+								ReadOnly: true,
+								Text:     "",
 							},
 
 							// Live CC-ID list
@@ -271,7 +309,151 @@ func run() {
 
 	wa.applyFilter()
 	go checkAndUpdate(wa.mw)
+
+	// Auto-search is checked by default — start immediately after window is created.
+	wa.leVCIHost.SetReadOnly(true)
+	wa.startAutoSearch()
+
 	wa.mw.Run()
+}
+
+// ── Tab 1: Auto-search (BMW ZGW discovery) ───────────────────────────────────
+
+// startAutoSearch launches bmwzgw.Run in a background goroutine.
+// When the ZGW gateway is found, the VCI IP field is updated automatically.
+func (a *winApp) startAutoSearch() {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.zgwCancel = cancel
+	a.leZGW.SetText("Searching for BMW on 169.254.x.x…")
+
+	go bmwzgw.Run(ctx, "", func(info *bmwzgw.Info) {
+		a.mw.Synchronize(func() {
+			if !a.cbAutoSearch.Checked() {
+				return // checkbox was unchecked while goroutine was still running
+			}
+			if info == nil {
+				a.leZGW.SetText("No BMW ENET adapter found (169.254.x.x interface not detected)")
+				return
+			}
+			if info.VIN == "" {
+				// Stage 1: 169.254.x.x interface detected, ZGW has not yet responded.
+				// Don't update the IP field yet — it's the host's own IP, not the ZGW's.
+				a.leZGW.SetText(fmt.Sprintf(
+					"ENET adapter detected (%s) — waiting for ZGW response…", info.IP))
+			} else {
+				// Stage 2: ZGW responded — info.IP is the gateway's real IP.
+				a.leVCIHost.SetText(info.IP)
+				s := info.IP
+				if info.Model != "" {
+					s += "  " + info.Model
+				}
+				s += "  " + info.VIN
+				if info.Target != "" {
+					s += "  " + info.Target
+				}
+				a.leZGW.SetText(s)
+			}
+		})
+	})
+}
+
+// stopAutoSearch cancels the running ZGW discovery goroutine.
+func (a *winApp) stopAutoSearch() {
+	if a.zgwCancel != nil {
+		a.zgwCancel()
+		a.zgwCancel = nil
+	}
+}
+
+// ── Tab 1: Read from Car ──────────────────────────────────────────────────────
+
+func (a *winApp) readFromCar() {
+	host := strings.TrimSpace(a.leVCIHost.Text())
+	if host == "" {
+		walk.MsgBox(a.mw, "No IP", "Enter the VCI IP address.", walk.MsgBoxIconWarning)
+		return
+	}
+	a.lblLive.SetText("Connecting…")
+	a.lbLive.SetModel([]string{})
+	a.liveCCIDs = nil
+
+	go func() {
+		ccids, err := ReadVehicleCCIDs(host)
+		a.mw.Synchronize(func() {
+			if err != nil {
+				// Truncate very long error messages so they don't break the layout.
+				msg := "Error — " + err.Error()
+				if len(msg) > 120 {
+					msg = msg[:117] + "…"
+				}
+				a.lblLive.SetText(msg)
+				return
+			}
+			a.liveCCIDs = ccids
+			if len(ccids) == 0 {
+				a.lblLive.SetText("Connected — no active CC-IDs found in cluster")
+				return
+			}
+			a.refreshLiveList()
+			a.lblLive.SetText(fmt.Sprintf("%d CC-ID(s) found — double-click to add", len(ccids)))
+		})
+	}()
+}
+
+// addFromCar adds the double-clicked CC-ID from the live list to the selected set.
+func (a *winApp) addFromCar() {
+	idx := a.lbLive.CurrentIndex()
+	if idx < 0 || idx >= len(a.liveCCIDs) {
+		return
+	}
+	c := a.liveCCIDs[idx]
+	a.selectedIDs[c.ID] = true
+	a.refreshLists()
+	a.refreshHexTemplate()
+	a.refreshLiveList()
+	a.lblLive.SetText(fmt.Sprintf("Added CC-ID %d — %d selected total", c.ID, len(a.selectedIDs)))
+}
+
+// addAllFromCar adds every CC-ID returned from the car and switches to Tab 2.
+func (a *winApp) addAllFromCar() {
+	if len(a.liveCCIDs) == 0 {
+		walk.MsgBox(a.mw, "Nothing to add",
+			"Connect to the car first.", walk.MsgBoxIconWarning)
+		return
+	}
+	for _, c := range a.liveCCIDs {
+		a.selectedIDs[c.ID] = true
+	}
+	a.refreshLists()
+	a.refreshHexTemplate()
+	a.refreshLiveList()
+	a.lblLive.SetText(fmt.Sprintf("All %d CC-IDs added (%d selected total)",
+		len(a.liveCCIDs), len(a.selectedIDs)))
+	a.tw.SetCurrentIndex(1) // jump to Select tab
+}
+
+// refreshLiveList redraws the live ListBox with updated checkmarks.
+func (a *winApp) refreshLiveList() {
+	if len(a.liveCCIDs) == 0 {
+		return
+	}
+	entryByID := make(map[int]CCIDEntry, len(a.allEntries))
+	for _, e := range a.allEntries {
+		entryByID[e.ID] = e
+	}
+	items := make([]string, len(a.liveCCIDs))
+	for i, c := range a.liveCCIDs {
+		mark := "   "
+		if a.selectedIDs[c.ID] {
+			mark = " ✓ "
+		}
+		desc := c.Description
+		if e, ok := entryByID[c.ID]; ok {
+			desc = a.entryDesc(e)
+		}
+		items[i] = fmt.Sprintf("%s%-5d  %s", mark, c.ID, desc)
+	}
+	a.lbLive.SetModel(items)
 }
 
 // ── Tab 2: CC-ID list helpers ─────────────────────────────────────────────────
@@ -403,6 +585,15 @@ func (a *winApp) refreshHexTemplate() {
 	a.hexComp.SetSuspended(false)
 }
 
+// resetHexToFF resets every group's hex LineEdit back to all-FF, discarding
+// any values loaded from a CAFD/NCD file or typed by the user.
+func (a *winApp) resetHexToFF() {
+	ff := bytesToHexComma([]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})
+	for _, le := range a.hexFields {
+		le.SetText(ff)
+	}
+}
+
 // loadCAFD lets the user pick a CAFD / NCD / S-record file and updates
 // the hex LineEdits with the values read from that file.
 func (a *winApp) loadCAFD() {
@@ -497,15 +688,6 @@ func (a *winApp) calculate() {
 	a.resComp.SetSuspended(false)
 }
 
-// resetHexToFF resets every group's hex LineEdit back to all-FF, discarding
-// any values loaded from a CAFD/NCD file or typed by the user.
-func (a *winApp) resetHexToFF() {
-	ff := bytesToHexComma([]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})
-	for _, le := range a.hexFields {
-		le.SetText(ff)
-	}
-}
-
 func (a *winApp) affectedGroups() []int {
 	seen := make(map[int]bool)
 	for id := range a.selectedIDs {
@@ -517,92 +699,6 @@ func (a *winApp) affectedGroups() []int {
 	}
 	sort.Ints(groups)
 	return groups
-}
-
-// ── Tab 1: Read from Car ──────────────────────────────────────────────────────
-
-func (a *winApp) readFromCar() {
-	host := strings.TrimSpace(a.leVCIHost.Text())
-	if host == "" {
-		walk.MsgBox(a.mw, "No IP", "Enter the VCI IP address.", walk.MsgBoxIconWarning)
-		return
-	}
-	a.lblLive.SetText("Connecting…")
-	a.lbLive.SetModel([]string{})
-	a.liveCCIDs = nil
-
-	go func() {
-		ccids, err := ReadVehicleCCIDs(host)
-		a.mw.Synchronize(func() {
-			if err != nil {
-				a.lblLive.SetText("Error — " + err.Error())
-				return
-			}
-			a.liveCCIDs = ccids
-			if len(ccids) == 0 {
-				a.lblLive.SetText("Connected — no active CC-IDs found in cluster")
-				return
-			}
-			a.refreshLiveList()
-			a.lblLive.SetText(fmt.Sprintf("%d CC-ID(s) found — double-click to add", len(ccids)))
-		})
-	}()
-}
-
-// addFromCar adds the double-clicked CC-ID from the live list to the selected set.
-func (a *winApp) addFromCar() {
-	idx := a.lbLive.CurrentIndex()
-	if idx < 0 || idx >= len(a.liveCCIDs) {
-		return
-	}
-	c := a.liveCCIDs[idx]
-	a.selectedIDs[c.ID] = true
-	a.refreshLists()
-	a.refreshHexTemplate()
-	a.refreshLiveList()
-	a.lblLive.SetText(fmt.Sprintf("Added CC-ID %d — %d selected total", c.ID, len(a.selectedIDs)))
-}
-
-// addAllFromCar adds every CC-ID returned from the car and switches to Tab 2.
-func (a *winApp) addAllFromCar() {
-	if len(a.liveCCIDs) == 0 {
-		walk.MsgBox(a.mw, "Nothing to add",
-			"Connect to the car first.", walk.MsgBoxIconWarning)
-		return
-	}
-	for _, c := range a.liveCCIDs {
-		a.selectedIDs[c.ID] = true
-	}
-	a.refreshLists()
-	a.refreshHexTemplate()
-	a.refreshLiveList()
-	a.lblLive.SetText(fmt.Sprintf("All %d CC-IDs added (%d selected total)",
-		len(a.liveCCIDs), len(a.selectedIDs)))
-	a.tw.SetCurrentIndex(1) // jump to Select tab
-}
-
-// refreshLiveList redraws the live ListBox with updated checkmarks.
-func (a *winApp) refreshLiveList() {
-	if len(a.liveCCIDs) == 0 {
-		return
-	}
-	entryByID := make(map[int]CCIDEntry, len(a.allEntries))
-	for _, e := range a.allEntries {
-		entryByID[e.ID] = e
-	}
-	items := make([]string, len(a.liveCCIDs))
-	for i, c := range a.liveCCIDs {
-		mark := "   "
-		if a.selectedIDs[c.ID] {
-			mark = " ✓ "
-		}
-		desc := c.Description
-		if e, ok := entryByID[c.ID]; ok {
-			desc = a.entryDesc(e)
-		}
-		items[i] = fmt.Sprintf("%s%-5d  %s", mark, c.ID, desc)
-	}
-	a.lbLive.SetModel(items)
 }
 
 // ── description mode ─────────────────────────────────────────────────────────
