@@ -6,9 +6,9 @@ Cross-platform tool for calculating BMW instrument cluster (Kombi) CC-ID hex mas
 
 | Binary | UI framework | Architecture | Min OS |
 |--------|-------------|--------------|--------|
-| `bmw-ccid-calculator-win32.exe` | Native Win32 (`lxn/walk`) | x86 32-bit | Windows 7 |
-| `bmw-ccid-calculator-macos-arm` | Fyne | Apple Silicon (arm64) | macOS 11 |
-| `bmw-ccid-calculator-macos-intel` | Fyne | Intel (amd64) | macOS 10.15 |
+| `kombi-ccid-win32.exe` | Native Win32 (`lxn/walk`) | x86 32-bit | Windows 7 |
+| `kombi-ccid-macos-arm64` | Fyne | Apple Silicon (arm64) | macOS 11 |
+| `kombi-ccid-macos-amd64` | Fyne | Intel (amd64) | macOS 10.15 |
 
 Pre-built binaries are attached to each [GitHub Release](../../releases).
 
