@@ -83,6 +83,9 @@ func checkAndUpdate(mw *walk.MainWindow) {
 		return
 	}
 	exePath, _ = filepath.EvalSymlinks(exePath)
+	// Strip the \\?\ extended-length prefix that EvalSymlinks can return on
+	// Windows — cmd.exe and batch files do not understand that prefix.
+	exePath = strings.TrimPrefix(exePath, `\\?\`)
 
 	// Download into %TEMP% — always writable, no conflict with the running exe.
 	tmpPath := filepath.Join(os.TempDir(), "kombi-ccid-update.exe")
@@ -99,23 +102,33 @@ func checkAndUpdate(mw *walk.MainWindow) {
 		return // silent — no error dialog for auto-update
 	}
 
-	// Build the cmd.exe command:
-	//   ping 127.0.0.1 -n 4   → ~3 second delay (4 ICMP replies, 1 s apart)
-	//   copy /y src dst        → overwrite the installed exe
-	//   start "" dst           → launch the newly installed version
-	//
-	// Paths are double-quoted; double-quotes are invalid in Windows paths so no
-	// extra escaping is needed.
-	installCmd := fmt.Sprintf(
-		`ping 127.0.0.1 -n 4 >NUL & copy /y "%s" "%s" & start "" "%s"`,
-		tmpPath, exePath, exePath,
-	)
-	cmd := exec.Command("cmd.exe", "/c", installCmd)
-	// CREATE_NEW_PROCESS_GROUP (0x200) + CREATE_NO_WINDOW (0x8000000):
-	// - breaks Job Object inheritance → cmd.exe survives our os.Exit(0)
-	// - no console window is shown
+	// Write a temporary batch file instead of embedding the command inline in
+	// cmd.exe /c "...".  When a long command string with embedded double-quotes
+	// is passed as a single argument, Go's Windows command-line quoting escapes
+	// those inner quotes as \" — but cmd.exe does not un-escape them, so the
+	// paths get mangled (leading to "network path not found" errors).
+	// A batch file avoids that entirely: its content is written as plain bytes,
+	// bypassing the command-line quoting layer completely.
+	batPath := filepath.Join(os.TempDir(), "kombi-ccid-update.bat")
+	batContent := "@echo off\r\n" +
+		"ping 127.0.0.1 -n 4 >NUL\r\n" +
+		"copy /y \"" + tmpPath + "\" \"" + exePath + "\"\r\n" +
+		"start \"\" \"" + exePath + "\"\r\n" +
+		"del \"%~f0\"\r\n" // self-delete the batch file when done
+	if werr := os.WriteFile(batPath, []byte(batContent), 0644); werr != nil {
+		mw.Synchronize(func() {
+			mw.SetTitle("BMW Kombi CC-ID Calculator " + version)
+		})
+		return
+	}
+
+	// Launch the batch file as a fully detached hidden process.
+	// CREATE_NEW_PROCESS_GROUP (0x200) breaks Job Object inheritance so
+	// cmd.exe survives our os.Exit(0).
+	// CREATE_NO_WINDOW (0x8000000) keeps the console window hidden.
+	cmd := exec.Command("cmd.exe", "/c", batPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: 0x00000200 | 0x08000000, // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+		CreationFlags: 0x00000200 | 0x08000000,
 	}
 
 	if err := cmd.Start(); err != nil {
