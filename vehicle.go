@@ -110,6 +110,7 @@ func parseCCIDResponse(payload []byte) ([]LiveCCID, error) {
 	data := payload[minLen:]
 	descs := loadDescriptions()
 
+	seen := make(map[int]bool)
 	var results []LiveCCID
 	for i := 0; i+3 < len(data); i += 4 {
 		hi, lo := data[i], data[i+1]
@@ -118,6 +119,10 @@ func parseCCIDResponse(payload []byte) ([]LiveCCID, error) {
 			break // zero-padded tail = end of stored CC-IDs
 		}
 		ccid := int(hi)<<8 | int(lo)
+		if seen[ccid] {
+			continue // skip duplicate CC-ID entries from the cluster
+		}
+		seen[ccid] = true
 		desc := descs[ccid]
 		if desc == "" {
 			desc = fmt.Sprintf("CC-ID %d (not in database)", ccid)
