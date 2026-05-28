@@ -749,6 +749,8 @@ var descModeNames = []string{
 	"DeDe_LongText",
 	"EnGB",
 	"EnGB_LongText",
+	"RuRU",
+	"RuRU_LongText",
 }
 
 // entryDesc returns the display string for e using the current language/mode.
@@ -767,6 +769,10 @@ func (a *winApp) entryDesc(e CCIDEntry) string {
 		return firstNonEmpty(e.TitleENGB, e.TitleENUS, e.TitleDEDE)
 	case 5:
 		return firstNonEmpty(e.LongENGB, e.TitleENGB, e.LongENUS)
+	case 6:
+		return firstNonEmpty(e.TitleRURU, e.TitleENGB, e.TitleDEDE)
+	case 7:
+		return firstNonEmpty(e.LongRURU, e.TitleRURU, e.LongENGB)
 	}
 	return e.Description
 }

@@ -26,6 +26,8 @@ type CCIDEntry struct {
 	LongENUS  string
 	TitleDEDE string
 	LongDEDE  string
+	TitleRURU string
+	LongRURU  string
 }
 
 // matchesQuery returns true when the CC-ID number or any language text contains q (case-insensitive).
@@ -40,6 +42,7 @@ func matchesQuery(e CCIDEntry, q string) bool {
 		e.TitleENGB, e.LongENGB,
 		e.TitleENUS, e.LongENUS,
 		e.TitleDEDE, e.LongDEDE,
+		e.TitleRURU, e.LongRURU,
 	} {
 		if s != "" && strings.Contains(strings.ToLower(s), q) {
 			return true
@@ -87,7 +90,8 @@ func csvData() string {
 // parseCSV handles the multi-column BMW error code CSV.
 // Columns: CC_ID, WARN_LIGHT_IDENTIFIER,
 //
-//	TITLE_ENUS, LONGTEXT_ENUS, TITLE_DEDE, LONGTEXT_DEDE, TITLE_ENGB, LONGTEXT_ENGB
+//	TITLE_ENUS, LONGTEXT_ENUS, TITLE_DEDE, LONGTEXT_DEDE, TITLE_ENGB, LONGTEXT_ENGB,
+//	TITLE_RURU, LONGTEXT_RURU
 func parseCSV(data string) []CCIDEntry {
 	r := csv.NewReader(strings.NewReader(data))
 	r.LazyQuotes = true
@@ -110,6 +114,8 @@ func parseCSV(data string) []CCIDEntry {
 	cLongUS := colIdx(col, "LONGTEXT_ENUS")
 	cTitleDE := colIdx(col, "TITLE_DEDE")
 	cLongDE := colIdx(col, "LONGTEXT_DEDE")
+	cTitleRU := colIdx(col, "TITLE_RURU")
+	cLongRU := colIdx(col, "LONGTEXT_RURU")
 
 	clean := func(s string) string {
 		s = strings.TrimSpace(s)
@@ -151,6 +157,8 @@ func parseCSV(data string) []CCIDEntry {
 			LongENUS:    clean(field(rec, cLongUS)),
 			TitleDEDE:   clean(field(rec, cTitleDE)),
 			LongDEDE:    clean(field(rec, cLongDE)),
+			TitleRURU:   clean(field(rec, cTitleRU)),
+			LongRURU:    clean(field(rec, cLongRU)),
 		})
 	}
 
