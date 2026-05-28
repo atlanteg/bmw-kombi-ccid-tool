@@ -320,10 +320,11 @@ func run() {
 
 	wa.applyFilter()
 
-	// Load the application icon from the embedded exe resources (resource ID 1 = icon.ico).
-	// This sets the icon in the title bar and taskbar.  The exe file icon in Explorer and
-	// the taskbar button are handled automatically by Windows from the same embedded resource.
-	if icon, err := walk.NewIconFromResourceId(1); err == nil {
+	// Load the application icon from the embedded exe resources.
+	// rsrc assigns IDs in order: manifest=1, group-icon=2, individual frames=3+.
+	// We need the RT_GROUP_ICON (ID 2) so Windows picks the best-fit size for
+	// title bar (16px), taskbar (32px) and alt-tab (48px) automatically.
+	if icon, err := walk.NewIconFromResourceId(2); err == nil {
 		wa.mw.SetIcon(icon)
 	}
 
