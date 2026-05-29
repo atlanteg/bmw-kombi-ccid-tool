@@ -85,7 +85,7 @@ func run() {
 						Children: []Widget{
 
 							Label{Text: "Reads stored CC-IDs from the instrument cluster via EDIABAS/TCP (port 6801)."},
-							Label{Text: "Requirements: BMW VCI adapter connected via OBD-II cable, ignition ON."},
+							Label{Text: "Requirements: ENET cable connected, ignition ON."},
 
 							// Auto-search row: checkbox + ZGW discovery status
 							Composite{
